@@ -1,1 +1,1 @@
-# Hack_The_Heaights_Hackathon_2025_
+# Hack_The_Heights_Hackathon_2025_

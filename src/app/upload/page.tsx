@@ -141,13 +141,13 @@ export default function UploadPage() {
               Upload Your Profile Photos
             </h1>
             <p className="text-gray-600 mb-6 text-center text-sm sm:text-base"> {/* Responsive text */}
-              Welcome, {(user as any).attributes?.name || (user as any).attributes?.given_name || user.username}! Upload **exactly 10** clear photos (JPG/PNG) for face recognition.
+              Welcome — please upload exactly 10 clear photos (JPG/PNG) for face recognition.
             </p>
 
             {/* --- Dropzone Div with Tailwind Classes --- */}
             <div
               // Centered, less vertical padding, adjusted hover/active states
-              className={`max-w-xl mx-auto border-2 border-dashed border-gray-300 rounded-lg py-6 px-6 text-center transition-colors duration-200 cursor-pointer hover:border-blue-600 hover:bg-blue-50 ${dragActive ? 'border-blue-700 bg-blue-100' : 'bg-gray-50'}`}
+              className={`upload-dropzone max-w-xl mx-auto border-2 border-dashed border-gray-300 rounded-lg py-6 px-6 text-center transition-colors duration-200 cursor-pointer hover:border-blue-600 hover:bg-blue-50 ${dragActive ? 'border-blue-700 bg-blue-100' : 'bg-gray-50'}`}
               onDragEnter={handleDrag}
               onDragLeave={handleDrag}
               onDragOver={handleDrag}
@@ -155,7 +155,7 @@ export default function UploadPage() {
               onClick={() => document.getElementById('file-upload')?.click()} // Make clickable via label or div
             >
               <div className="space-y-2 pointer-events-none">
-                <svg className="mx-auto h-10 w-10 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48">
+                <svg className="mx-auto h-10 w-10 text-gray-400" width="64" height="64" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
                   <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
                 <div>

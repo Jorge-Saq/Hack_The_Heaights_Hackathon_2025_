@@ -22,10 +22,20 @@ Resources:
   # S3 Buckets
   UserProfilesBucket:
     Type: AWS::S3::Bucket
+    DependsOn: S3InvokeIndexUserFacePermission
     Properties:
       BucketName: !Sub '${AWS::StackName}-user-profiles-${Environment}'
       VersioningConfiguration: { Status: Enabled }
       PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true }
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt IndexUserFaceFunction.Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: user-profiles/
       CorsConfiguration:
         CorsRules:
           - AllowedHeaders: ['*']
@@ -36,10 +46,20 @@ Resources:
 
   EventPhotosBucket:
     Type: AWS::S3::Bucket
+    DependsOn: S3InvokeProcessEventPhotoPermission
     Properties:
       BucketName: !Sub '${AWS::StackName}-event-photos-${Environment}'
       VersioningConfiguration: { Status: Enabled }
       PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true }
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt ProcessEventPhotoFunction.Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: event-photos/
       CorsConfiguration:
         CorsRules:
           - AllowedHeaders: ['*']
@@ -110,13 +130,13 @@ Resources:
       ManagedPolicyArns: [arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole]
       Policies:
         - PolicyName: S3PresignAccess
-          PolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: Allow, Action: [s3:PutObject], Resource: [!Sub 'arn:aws:s3:::${UserProfilesBucket}/*', !Sub 'arn:aws:s3:::${EventPhotosBucket}/*'] }] }
+          PolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: Allow, Action: [s3:PutObject], Resource: [!Sub 'arn:aws:s3:::${AWS::StackName}-user-profiles-${Environment}/*', !Sub 'arn:aws:s3:::${AWS::StackName}-event-photos-${Environment}/*'] }] }
         - PolicyName: S3ReadAccess
-          PolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: Allow, Action: [s3:GetObject], Resource: [!Sub 'arn:aws:s3:::${UserProfilesBucket}/*', !Sub 'arn:aws:s3:::${EventPhotosBucket}/*'] }] }
+          PolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: Allow, Action: [s3:GetObject, s3:HeadObject], Resource: [!Sub 'arn:aws:s3:::${AWS::StackName}-user-profiles-${Environment}/*', !Sub 'arn:aws:s3:::${AWS::StackName}-event-photos-${Environment}/*'] }] }
         - PolicyName: RekognitionAccess
           PolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: Allow, Action: ['rekognition:IndexFaces', 'rekognition:DetectFaces', 'rekognition:SearchFacesByImage', 'rekognition:CreateCollection', 'rekognition:ListCollections'], Resource: '*' }] }
         - PolicyName: DynamoDBAccess
-          PolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: Allow, Action: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:Query', 'dynamodb:Scan'], Resource: [!GetAtt UserProfilesTable.Arn, !GetAtt MatchedPhotosTable.Arn, !Sub '${MatchedPhotosTable.Arn}/index/UserPhotosIndex'] }] }
+          PolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: Allow, Action: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:Query', 'dynamodb:Scan'], Resource: [!Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AWS::StackName}-user-profiles-${Environment}', !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AWS::StackName}-matched-photos-${Environment}', !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AWS::StackName}-matched-photos-${Environment}/index/UserPhotosIndex'] }] }
         - PolicyName: SESAccess
           PolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: Allow, Action: ['ses:SendEmail', 'ses:SendRawEmail'], Resource: '*' }] }
 
@@ -162,16 +182,25 @@ Resources:
             if (event.httpMethod === 'POST') {
                 try {
                     if (!event.body) throw new Error("Missing request body");
-                    const { bucket, key, contentType } = JSON.parse(event.body);
+                    const { bucket, key, contentType, metadata } = JSON.parse(event.body);
 
                     if (!bucket || !key || !contentType) throw new Error("Missing required parameters: bucket, key, or contentType");
                     if (!contentType.startsWith('image/')) throw new Error("Invalid content type, only images allowed");
 
-                    const command = new PutObjectCommand({
+                    // Build PutObjectCommand with metadata if provided
+                    const commandParams = {
                         Bucket: bucket,
                         Key: key,
                         ContentType: contentType
-                    });
+                    };
+                    
+                    // Add metadata if provided (for event photos)
+                    if (metadata && typeof metadata === 'object') {
+                        commandParams.Metadata = metadata;
+                        console.log("Including metadata:", metadata);
+                    }
+
+                    const command = new PutObjectCommand(commandParams);
 
                     const expiresIn = 300; // 5 minutes
                     console.log("Generating presigned URL for:", { bucket, key, contentType });
@@ -209,7 +238,7 @@ Resources:
       Handler: index.handler
       Role: !GetAtt LambdaExecutionRole.Arn
       Timeout: 30
-      Environment: { Variables: { USER_PROFILES_BUCKET: !Ref UserProfilesBucket, USER_PROFILES_TABLE: !Ref UserProfilesTable, REKOGNITION_COLLECTION_ID: !Sub '${AWS::StackName}-faces-${Environment}' }}
+      Environment: { Variables: { USER_PROFILES_BUCKET: !Sub '${AWS::StackName}-user-profiles-${Environment}', USER_PROFILES_TABLE: !Sub '${AWS::StackName}-user-profiles-${Environment}', REKOGNITION_COLLECTION_ID: !Sub '${AWS::StackName}-faces-${Environment}' }}
       Code: { ZipFile: 'exports.handler = async (event) => { console.log("IndexUserFace triggered:", JSON.stringify(event, null, 2)); /* TODO: Use SDK v3 with require */ return { statusCode: 200 }; };' } # Placeholder - Needs SDK v3 require update
 
   ProcessEventPhotoFunction:
@@ -222,9 +251,9 @@ Resources:
       Timeout: 60
       Environment:
         Variables:
-          EVENT_PHOTOS_BUCKET: !Ref EventPhotosBucket
-          MATCHED_PHOTOS_TABLE: !Ref MatchedPhotosTable
-          USER_PROFILES_TABLE: !Ref UserProfilesTable
+          EVENT_PHOTOS_BUCKET: !Sub '${AWS::StackName}-event-photos-${Environment}'
+          MATCHED_PHOTOS_TABLE: !Sub '${AWS::StackName}-matched-photos-${Environment}'
+          USER_PROFILES_TABLE: !Sub '${AWS::StackName}-user-profiles-${Environment}'
           REKOGNITION_COLLECTION_ID: !Sub '${AWS::StackName}-faces-${Environment}'
           SES_FROM_EMAIL: 'noreply@example.com' # Using placeholder
       Code: { ZipFile: 'exports.handler = async (event) => { console.log("ProcessEventPhoto triggered:", JSON.stringify(event, null, 2)); /* TODO: Use SDK v3 with require */ return { statusCode: 200 }; };' } # Placeholder - Needs SDK v3 require update
@@ -322,7 +351,7 @@ Resources:
       FunctionName: !GetAtt IndexUserFaceFunction.Arn
       Action: lambda:InvokeFunction
       Principal: s3.amazonaws.com
-      SourceArn: !GetAtt UserProfilesBucket.Arn
+      SourceArn: !Sub 'arn:aws:s3:::${AWS::StackName}-user-profiles-${Environment}'
       SourceAccount: !Ref AWS::AccountId
 
   S3InvokeProcessEventPhotoPermission:
@@ -331,7 +360,7 @@ Resources:
       FunctionName: !GetAtt ProcessEventPhotoFunction.Arn
       Action: lambda:InvokeFunction
       Principal: s3.amazonaws.com
-      SourceArn: !GetAtt EventPhotosBucket.Arn
+      SourceArn: !Sub 'arn:aws:s3:::${AWS::StackName}-event-photos-${Environment}'
       SourceAccount: !Ref AWS::AccountId
 
 Conditions:

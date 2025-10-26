@@ -85,29 +85,28 @@ export async function uploadFile(
 export async function uploadEventPhoto(
   file: File,
   eventId: string,
-  onProgress?: (progress: number) => void // Note: Progress simulation is basic
+  uploaderEmail: string,
+  onProgress?: (progress: number) => void
 ): Promise<void> {
   try {
-    // --- Get authentication token (v6+ style) ---
-     const session = await fetchAuthSession();
-     const token = session.tokens?.idToken?.toString(); // Access idToken JWT string
+    const session = await fetchAuthSession();
+    const token = session.tokens?.idToken?.toString();
 
-     console.log("Retrieved ID Token for event photo:", token ? `Token found (length ${token.length})` : "Token NOT found");
+    console.log("Retrieved ID Token for event photo:", token ? `Token found (length ${token.length})` : "Token NOT found");
 
-     if (!token) {
-       throw new Error('Authentication token not found. User might not be logged in.');
-     }
-     if (!API_GATEWAY_URL) {
-        throw new Error('API Gateway URL is not configured. Check NEXT_PUBLIC_API_GATEWAY_URL environment variable.');
-     }
-      if (!process.env.NEXT_PUBLIC_EVENT_PHOTOS_BUCKET) {
-        throw new Error('Event photos bucket name is not configured. Check NEXT_PUBLIC_EVENT_PHOTOS_BUCKET environment variable.');
-      }
-    // --- End Token Retrieval ---
+    if (!token) {
+      throw new Error('Authentication token not found. User might not be logged in.');
+    }
+    if (!API_GATEWAY_URL) {
+      throw new Error('API Gateway URL is not configured. Check NEXT_PUBLIC_API_GATEWAY_URL environment variable.');
+    }
+    if (!process.env.NEXT_PUBLIC_EVENT_PHOTOS_BUCKET) {
+      throw new Error('Event photos bucket name is not configured. Check NEXT_PUBLIC_EVENT_PHOTOS_BUCKET environment variable.');
+    }
 
     const key = `event-photos/${eventId}/${file.name}`;
 
-    // Get presigned URL from API Gateway
+    // Get presigned URL from API Gateway with metadata
     const response = await fetch(`${API_GATEWAY_URL}/upload-url`, {
       method: 'POST',
       headers: {
@@ -118,38 +117,41 @@ export async function uploadEventPhoto(
         bucket: process.env.NEXT_PUBLIC_EVENT_PHOTOS_BUCKET,
         key,
         contentType: file.type,
+        metadata: {
+          'uploader-email': uploaderEmail,
+          'event-id': eventId,
+        },
       }),
-    }); // <-- Fixed parenthesis was here
+    });
 
     if (!response.ok) {
-       const errorBody = await response.text();
+      const errorBody = await response.text();
       throw new Error(`Failed to get presigned URL for event photo: ${response.status} ${response.statusText}. Body: ${errorBody}`);
     }
 
     const { presignedUrl } = await response.json();
 
-     if (!presignedUrl) {
-         throw new Error('Presigned URL for event photo not received from API.');
-     }
+    if (!presignedUrl) {
+      throw new Error('Presigned URL for event photo not received from API.');
+    }
 
-     console.log(`Received presigned URL for event photo ${key}:`, presignedUrl.substring(0, 100) + '...');
+    console.log(`Received presigned URL for event photo ${key}:`, presignedUrl.substring(0, 100) + '...');
 
     // Upload file directly to S3 using presigned URL
+    // Note: Metadata is already embedded in the presigned URL
     const uploadResponse = await fetch(presignedUrl, {
       method: 'PUT',
       body: file,
       headers: {
         'Content-Type': file.type,
       },
-      // mode: 'cors'
     });
 
     if (!uploadResponse.ok) {
-       const errorBody = await uploadResponse.text();
+      const errorBody = await uploadResponse.text();
       throw new Error(`S3 Upload failed for event photo: ${uploadResponse.status} ${uploadResponse.statusText}. Body: ${errorBody}`);
     }
 
-    // Simulate progress for better UX
     if (onProgress) {
       onProgress(100);
     }

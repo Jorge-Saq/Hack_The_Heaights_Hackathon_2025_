@@ -24,14 +24,27 @@ exports.handler = async (event) => {
                     continue;
                 }
                 
-                const userId = keyParts[1];
-                const photoIndex = keyParts[2];
+                const userId = keyParts[1]; // This is the Cognito username (email)
+                const photoFilename = keyParts[2];
                 
-                // Get the image from S3
-                const s3Object = await s3.getObject({
-                    Bucket: bucket,
-                    Key: key
-                }).promise();
+                // Extract photo index from filename (e.g., "1.jpg" -> "1")
+                const photoIndex = photoFilename.split('.')[0];
+                
+                console.log(`Processing photo ${photoIndex} for user ${userId}`);
+                
+                // Get S3 object metadata to retrieve user email
+                let userEmail = userId; // Default to userId which should be email
+                try {
+                    const headParams = {
+                        Bucket: bucket,
+                        Key: key
+                    };
+                    const headResult = await s3.headObject(headParams).promise();
+                    userEmail = headResult.Metadata['user-email'] || headResult.Metadata['userEmail'] || userId;
+                    console.log('User email from metadata:', userEmail);
+                } catch (error) {
+                    console.error('Error reading S3 metadata:', error);
+                }
                 
                 // Index the face in Rekognition
                 const indexFacesParams = {
@@ -50,22 +63,34 @@ exports.handler = async (event) => {
                 
                 console.log('Indexing face with params:', JSON.stringify(indexFacesParams, null, 2));
                 
-                const indexResult = await rekognition.indexFaces(indexFacesParams).promise();
-                
-                if (indexResult.FaceRecords && indexResult.FaceRecords.length > 0) {
-                    const faceRecord = indexResult.FaceRecords[0];
-                    const faceId = faceRecord.Face.FaceId;
+                try {
+                    const indexResult = await rekognition.indexFaces(indexFacesParams).promise();
                     
-                    console.log(`Successfully indexed face ${faceId} for user ${userId}`);
+                    if (indexResult.FaceRecords && indexResult.FaceRecords.length > 0) {
+                        const faceRecord = indexResult.FaceRecords[0];
+                        const faceId = faceRecord.Face.FaceId;
+                        
+                        console.log(`Successfully indexed face ${faceId} for user ${userId}`);
+                        
+                        // Update user profile in DynamoDB
+                        await updateUserProfile(userId, key, faceId, photoIndex, userEmail);
+                        
+                    } else {
+                        console.log(`No face detected in photo: ${key}`);
+                        
+                        // Still update the user profile but mark as no face detected
+                        await updateUserProfile(userId, key, null, photoIndex, userEmail);
+                    }
+                } catch (rekError) {
+                    console.error('Rekognition indexing error:', rekError);
                     
-                    // Update user profile in DynamoDB
-                    await updateUserProfile(userId, key, faceId, photoIndex);
+                    // If collection doesn't exist, log a helpful message
+                    if (rekError.code === 'ResourceNotFoundException') {
+                        console.error(`Rekognition collection ${process.env.REKOGNITION_COLLECTION_ID} not found. Please create it first.`);
+                    }
                     
-                } else {
-                    console.log(`No face detected in photo: ${key}`);
-                    
-                    // Still update the user profile but mark as no face detected
-                    await updateUserProfile(userId, key, null, photoIndex);
+                    // Still update profile with error info
+                    await updateUserProfile(userId, key, null, photoIndex, userEmail, rekError.message);
                 }
             }
         }
@@ -90,7 +115,7 @@ exports.handler = async (event) => {
     }
 };
 
-async function updateUserProfile(userId, s3Key, faceId, photoIndex) {
+async function updateUserProfile(userId, s3Key, faceId, photoIndex, userEmail, errorMessage = null) {
     try {
         const tableName = process.env.USER_PROFILES_TABLE;
         
@@ -104,10 +129,16 @@ async function updateUserProfile(userId, s3Key, faceId, photoIndex) {
         
         let profileData = existingProfile.Item || {
             cognito_user_id: userId,
+            email: userEmail,
             profile_photos: [],
             face_ids: [],
             created_at: new Date().toISOString()
         };
+        
+        // Ensure email is set
+        if (!profileData.email && userEmail) {
+            profileData.email = userEmail;
+        }
         
         // Update profile photos array
         if (!profileData.profile_photos) {
@@ -119,7 +150,8 @@ async function updateUserProfile(userId, s3Key, faceId, photoIndex) {
             s3_key: s3Key,
             photo_index: photoIndex,
             face_id: faceId,
-            uploaded_at: new Date().toISOString()
+            uploaded_at: new Date().toISOString(),
+            error: errorMessage || undefined
         };
         
         // Find existing photo entry or add new one

@@ -38,8 +38,7 @@ Before you begin, ensure you have:
 ### 1. Clone and Setup
 
 ```bash
-git clone <your-repo-url>
-cd crowd-catcher
+git clone https://github.com/your-username/Hack_The_Heaights_Hackathon_2025_.git
 ```
 
 ### 2. Configure AWS CLI
@@ -89,10 +88,6 @@ After deployment, you'll need to configure a few things manually:
 # Verify your email address for sending notifications
 aws ses verify-email-identity --email-address your-email@domain.com
 
-# For production, verify your domain
-aws ses verify-domain-identity --domain yourdomain.com
-```
-
 ### 2. S3 Event Notifications
 
 Configure S3 to trigger Lambda functions when photos are uploaded:
@@ -103,6 +98,27 @@ aws cloudformation describe-stacks --stack-name crowd-catcher-stack --query 'Sta
 ```
 
 Then set up the event notifications in the AWS Console or using the AWS CLI.
+
+### 2. Create a .env.local to Test Locally
+# AWS Configuration
+NEXT_PUBLIC_AWS_REGION=us-east-1
+NEXT_PUBLIC_USER_POOL_ID=your-user-pool-id
+NEXT_PUBLIC_USER_POOL_CLIENT_ID=your-client-id
+NEXT_PUBLIC_API_GATEWAY_URL=your-api-gateway-url
+
+# S3 Buckets
+NEXT_PUBLIC_USER_PROFILES_BUCKET=crowd-catcher-stack-user-profiles-dev
+NEXT_PUBLIC_EVENT_PHOTOS_BUCKET=crowd-catcher-stack-event-photos-dev
+
+# DynamoDB Tables
+NEXT_PUBLIC_USER_PROFILES_TABLE=crowd-catcher-stack-user-profiles-dev
+NEXT_PUBLIC_MATCHED_PHOTOS_TABLE=crowd-catcher-stack-matched-photos-dev
+
+# Rekognition
+NEXT_PUBLIC_REKOGNITION_COLLECTION_ID=crowd-catcher-stack-faces-dev
+
+# SES
+SES_FROM_EMAIL=noreply@yourdomain.com
 
 ## 📁 Project Structure
 
@@ -135,25 +151,7 @@ crowd-catcher/
 - **S3 Bucket Policies**: Restricted access with presigned URLs
 - **API Gateway Authorization**: JWT token validation
 - **Data Encryption**: S3 and DynamoDB encryption at rest
-
-## 💰 Cost Estimation
-
-### Free Tier (First 12 months):
-- **S3**: 5GB storage, 20,000 GET requests, 2,000 PUT requests
-- **Lambda**: 1M requests, 400,000 GB-seconds
-- **DynamoDB**: 25GB storage, 25 RCU, 25 WCU
-- **Rekognition**: 5,000 images per month
-- **SES**: 62,000 emails per month
-
-### Estimated Monthly Cost (after free tier):
-- **S3**: ~$0.50-2.00 (depending on storage)
-- **Lambda**: ~$0.20-1.00 (depending on usage)
-- **DynamoDB**: ~$1.00-5.00 (depending on reads/writes)
-- **Rekognition**: ~$1.00-10.00 (depending on image processing)
-- **SES**: ~$0.10 per 1,000 emails
-
-**Total estimated cost: $3-20/month** (depending on usage)
-
+- 
 ## 🧪 Testing
 
 1. **Create User Account**: Sign up with email and password
@@ -162,7 +160,7 @@ crowd-catcher/
 4. **Check Gallery**: View the identified photo in your gallery
 5. **Test Notifications**: Check email for identification alerts
 
-## 🚨 Troubleshooting
+## Troubleshooting
 
 ### Common Issues:
 
@@ -191,26 +189,3 @@ crowd-catcher/
 2. **Test Locally**: Run `npm run dev`
 3. **Deploy Updates**: Run `./deploy.sh dev` to update infrastructure
 4. **Test in AWS**: Verify functionality in the deployed environment
-
-## 📄 License
-
-MIT License - see LICENSE file for details
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
-
-## 📞 Support
-
-For questions or issues:
-- Create an issue in this repository
-- Check the AWS documentation
-- Contact the development team
-
----
-
-**Built with ❤️ for the Hack The Heights Hackathon 2025**

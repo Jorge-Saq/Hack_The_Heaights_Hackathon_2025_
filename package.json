@@ -1,0 +1,49 @@
+{
+  "name": "crowd-catcher",
+  "version": "1.0.0",
+  "description": "AI-powered crowd photo identification app",
+  "main": "index.js",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "deploy": "aws cloudformation deploy --template-file infrastructure.yaml --stack-name crowd-catcher-stack --capabilities CAPABILITY_IAM"
+  },
+  "dependencies": {
+    "@aws-amplify/ui-react": "^6.0.0",
+    "aws-amplify": "^6.0.0",
+    "aws-sdk": "^2.1500.0",
+    "cors": "^2.8.5",
+    "express": "^4.18.0",
+    "multer": "^1.4.5-lts.1",
+    "next": "^14.0.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "react-hook-form": "^7.65.0",
+    "sharp": "^0.32.0",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.16",
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.0.0",
+    "@types/react-dom": "^18.0.0",
+    "@types/uuid": "^9.0.0",
+    "autoprefixer": "^10.4.21",
+    "eslint": "^8.0.0",
+    "eslint-config-next": "^14.0.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.16",
+    "typescript": "^5.0.0"
+  },
+  "keywords": [
+    "aws",
+    "rekognition",
+    "face-detection",
+    "crowd-photos",
+    "serverless"
+  ],
+  "author": "Crowd Catcher Team",
+  "license": "MIT"
+}

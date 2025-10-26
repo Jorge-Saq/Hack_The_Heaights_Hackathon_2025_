@@ -1,0 +1,348 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Crowd Catcher Infrastructure - Complete AWS setup for face recognition app (v10 - Lambda require Fix)'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'dev'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: 'Environment name'
+
+  ProdFrontendOrigin:
+    Type: String
+    Default: 'https://your-production-domain.com' # CHANGE THIS FOR PRODUCTION
+    Description: 'Frontend origin URL for production CORS'
+
+  DomainName: # Currently unused
+    Type: String
+    Default: 'crowd-catcher.local'
+    Description: 'Domain name for the application (Currently unused)'
+
+Resources:
+  # S3 Buckets
+  UserProfilesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-user-profiles-${Environment}'
+      VersioningConfiguration: { Status: Enabled }
+      PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true }
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT, POST, DELETE, HEAD]
+            AllowedOrigins: ['*'] # Restrict in production!
+            MaxAge: 3000
+            ExposedHeaders: ['ETag']
+
+  EventPhotosBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-event-photos-${Environment}'
+      VersioningConfiguration: { Status: Enabled }
+      PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true }
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT, POST, DELETE, HEAD]
+            AllowedOrigins: ['*'] # Restrict in production!
+            MaxAge: 3000
+            ExposedHeaders: ['ETag']
+
+  # Cognito User Pool
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${AWS::StackName}-user-pool-${Environment}'
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      Policies:
+        PasswordPolicy: { MinimumLength: 8, RequireUppercase: true, RequireLowercase: true, RequireNumbers: true, RequireSymbols: true }
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true # Keep mutable
+        - Name: name
+          AttributeDataType: String
+          Required: false
+          Mutable: true
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub '${AWS::StackName}-client-${Environment}'
+      GenerateSecret: false
+      ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+
+  # DynamoDB Tables
+  UserProfilesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-user-profiles-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: cognito_user_id, AttributeType: S }]
+      KeySchema: [{ AttributeName: cognito_user_id, KeyType: HASH }]
+
+  MatchedPhotosTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-matched-photos-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: match_id, AttributeType: S }
+        - { AttributeName: cognito_user_id, AttributeType: S }
+        - { AttributeName: timestamp, AttributeType: S }
+      KeySchema: [{ AttributeName: match_id, KeyType: HASH }]
+      GlobalSecondaryIndexes:
+        - IndexName: UserPhotosIndex
+          KeySchema:
+            - { AttributeName: cognito_user_id, KeyType: HASH }
+            - { AttributeName: timestamp, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+
+  # IAM Roles
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-lambda-role-${Environment}'
+      AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: sts:AssumeRole }] }
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole]
+      Policies:
+        - PolicyName: S3PresignAccess
+          PolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: Allow, Action: [s3:PutObject], Resource: [!Sub 'arn:aws:s3:::${UserProfilesBucket}/*', !Sub 'arn:aws:s3:::${EventPhotosBucket}/*'] }] }
+        - PolicyName: S3ReadAccess
+          PolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: Allow, Action: [s3:GetObject], Resource: [!Sub 'arn:aws:s3:::${UserProfilesBucket}/*', !Sub 'arn:aws:s3:::${EventPhotosBucket}/*'] }] }
+        - PolicyName: RekognitionAccess
+          PolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: Allow, Action: ['rekognition:IndexFaces', 'rekognition:DetectFaces', 'rekognition:SearchFacesByImage', 'rekognition:CreateCollection', 'rekognition:ListCollections'], Resource: '*' }] }
+        - PolicyName: DynamoDBAccess
+          PolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: Allow, Action: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:Query', 'dynamodb:Scan'], Resource: [!GetAtt UserProfilesTable.Arn, !GetAtt MatchedPhotosTable.Arn, !Sub '${MatchedPhotosTable.Arn}/index/UserPhotosIndex'] }] }
+        - PolicyName: SESAccess
+          PolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: Allow, Action: ['ses:SendEmail', 'ses:SendRawEmail'], Resource: '*' }] }
+
+  # Lambda Functions
+  GeneratePresignedUrlFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-generate-presigned-url-${Environment}'
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 15
+      Environment:
+        Variables:
+          ALLOWED_ORIGIN: !If [IsProd, !Ref ProdFrontendOrigin, 'http://localhost:3000']
+      Code:
+        # --- UPDATED CODE USING AWS SDK v3 with require syntax ---
+        ZipFile: |
+          // Use require syntax for AWS SDK v3 modules
+          const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+          const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+
+          // Create S3 client
+          const s3Client = new S3Client({});
+
+          exports.handler = async (event) => {
+            console.log("Received event:", JSON.stringify(event, null, 2));
+
+            const allowedOrigin = process.env.ALLOWED_ORIGIN || '*'; // Restrict in production
+            const corsHeaders = {
+              'Access-Control-Allow-Origin': allowedOrigin,
+              'Access-Control-Allow-Methods': 'OPTIONS, POST',
+              'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Amz-Date, X-Api-Key, X-Amz-Security-Token'
+            };
+
+            // Handle OPTIONS preflight request
+            if (event.httpMethod === 'OPTIONS') {
+                console.log("Handling OPTIONS preflight request");
+                return { statusCode: 200, headers: corsHeaders, body: '' };
+            }
+
+            // Handle POST request
+            if (event.httpMethod === 'POST') {
+                try {
+                    if (!event.body) throw new Error("Missing request body");
+                    const { bucket, key, contentType } = JSON.parse(event.body);
+
+                    if (!bucket || !key || !contentType) throw new Error("Missing required parameters: bucket, key, or contentType");
+                    if (!contentType.startsWith('image/')) throw new Error("Invalid content type, only images allowed");
+
+                    const command = new PutObjectCommand({
+                        Bucket: bucket,
+                        Key: key,
+                        ContentType: contentType
+                    });
+
+                    const expiresIn = 300; // 5 minutes
+                    console.log("Generating presigned URL for:", { bucket, key, contentType });
+                    const presignedUrl = await getSignedUrl(s3Client, command, { expiresIn });
+                    console.log("Generated presigned URL:", presignedUrl);
+
+                    return {
+                        statusCode: 200,
+                        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ presignedUrl })
+                    };
+                } catch (error) {
+                    console.error('Error generating presigned URL:', error);
+                    return {
+                        statusCode: error.message.includes("Invalid") || error.message.includes("Missing") ? 400 : 500,
+                        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ message: 'Failed to generate presigned URL', error: error.message })
+                    };
+                }
+            }
+
+            console.log("Unhandled HTTP method:", event.httpMethod);
+            return {
+                statusCode: 405, // Method Not Allowed
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: 'Method Not Allowed' })
+            };
+          };
+
+  IndexUserFaceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-index-user-face-${Environment}'
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+      Environment: { Variables: { USER_PROFILES_BUCKET: !Ref UserProfilesBucket, USER_PROFILES_TABLE: !Ref UserProfilesTable, REKOGNITION_COLLECTION_ID: !Sub '${AWS::StackName}-faces-${Environment}' }}
+      Code: { ZipFile: 'exports.handler = async (event) => { console.log("IndexUserFace triggered:", JSON.stringify(event, null, 2)); /* TODO: Use SDK v3 with require */ return { statusCode: 200 }; };' } # Placeholder - Needs SDK v3 require update
+
+  ProcessEventPhotoFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-process-event-photo-${Environment}'
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
+      Environment:
+        Variables:
+          EVENT_PHOTOS_BUCKET: !Ref EventPhotosBucket
+          MATCHED_PHOTOS_TABLE: !Ref MatchedPhotosTable
+          USER_PROFILES_TABLE: !Ref UserProfilesTable
+          REKOGNITION_COLLECTION_ID: !Sub '${AWS::StackName}-faces-${Environment}'
+          SES_FROM_EMAIL: 'noreply@example.com' # Using placeholder
+      Code: { ZipFile: 'exports.handler = async (event) => { console.log("ProcessEventPhoto triggered:", JSON.stringify(event, null, 2)); /* TODO: Use SDK v3 with require */ return { statusCode: 200 }; };' } # Placeholder - Needs SDK v3 require update
+
+  # API Gateway
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${AWS::StackName}-api-${Environment}'
+      Description: 'Crowd Catcher API'
+      EndpointConfiguration: { Types: [EDGE] }
+
+  UploadUrlResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: 'upload-url'
+
+  ApiGatewayUploadUrlPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref UploadUrlResource
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref ApiGatewayAuthorizer
+      MethodResponses: [{ StatusCode: '200' }, { StatusCode: '400' }, { StatusCode: '500' }]
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GeneratePresignedUrlFunction.Arn}/invocations'
+
+  ApiGatewayUploadUrlOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref UploadUrlResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+            method.response.header.Access-Control-Allow-Origin: "'*'" # Restrict in production!
+          ResponseModels: { 'application/json': 'Empty' }
+      Integration:
+        Type: MOCK
+        RequestTemplates: { 'application/json': '{"statusCode": 200}' }
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'" # Restrict in production!
+            ResponseTemplates: { 'application/json': '' }
+
+  ApiGatewayAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: !Sub '${AWS::StackName}-authorizer-${Environment}'
+      RestApiId: !Ref ApiGateway
+      Type: COGNITO_USER_POOLS
+      IdentitySource: method.request.header.Authorization
+      ProviderARNs: [!GetAtt UserPool.Arn]
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: [ApiGatewayUploadUrlPostMethod, ApiGatewayUploadUrlOptionsMethod]
+    Properties:
+      RestApiId: !Ref ApiGateway
+      Description: !Sub 'Deployment ${Environment} - ${AWS::StackId}' # Force redeploy on change
+
+  ApiGatewayStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      StageName: !Ref Environment
+      RestApiId: !Ref ApiGateway
+      DeploymentId: !Ref ApiGatewayDeployment
+      # Removed MethodSettings block
+
+  # Lambda Permissions
+  InvokeGeneratePresignedUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt GeneratePresignedUrlFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/${Environment}/POST/upload-url'
+
+  S3InvokeIndexUserFacePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt IndexUserFaceFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !GetAtt UserProfilesBucket.Arn
+      SourceAccount: !Ref AWS::AccountId
+
+  S3InvokeProcessEventPhotoPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ProcessEventPhotoFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !GetAtt EventPhotosBucket.Arn
+      SourceAccount: !Ref AWS::AccountId
+
+Conditions:
+  IsProd: !Equals [!Ref Environment, 'prod']
+
+Outputs:
+  UserPoolId: { Description: Cognito User Pool ID, Value: !Ref UserPool, Export: { Name: !Sub '${AWS::StackName}-UserPoolId' } }
+  UserPoolClientId: { Description: Cognito User Pool Client ID, Value: !Ref UserPoolClient, Export: { Name: !Sub '${AWS::StackName}-UserPoolClientId' } }
+  UserProfilesBucketName: { Description: S3 Bucket for user profile photos, Value: !Ref UserProfilesBucket, Export: { Name: !Sub '${AWS::StackName}-UserProfilesBucket' } }
+  EventPhotosBucketName: { Description: S3 Bucket for event photos, Value: !Ref EventPhotosBucket, Export: { Name: !Sub '${AWS::StackName}-EventPhotosBucket' } }
+  ApiGatewayUrl: { Description: API Gateway URL, Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}', Export: { Name: !Sub '${AWS::StackName}-ApiUrl' } }
+  GeneratePresignedUrlFunctionArn: { Description: ARN of GeneratePresignedUrl Lambda, Value: !GetAtt GeneratePresignedUrlFunction.Arn, Export: { Name: !Sub '${AWS::StackName}-GeneratePresignedUrlFunctionArn' } }
+  IndexUserFaceFunctionArn: { Description: ARN of IndexUserFace Lambda, Value: !GetAtt IndexUserFaceFunction.Arn, Export: { Name: !Sub '${AWS::StackName}-IndexUserFaceFunctionArn' } }
+  ProcessEventPhotoFunctionArn: { Description: ARN of ProcessEventPhoto Lambda, Value: !GetAtt ProcessEventPhotoFunction.Arn, Export: { Name: !Sub '${AWS::StackName}-ProcessEventPhotoFunctionArn' } }
